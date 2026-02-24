@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
 
-class Settings(BaseSettings):
+class Config(BaseSettings):
     """Application settings."""
 
     project_root: Path = Path(__file__).parents[2]
@@ -14,5 +14,4 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
-print(settings.project_root)
+config = Config()
