@@ -5,10 +5,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "gdown>=5.2.1",
+    "h5py>=3.15.1",
     "lightning>=2.6.1",
     "matplotlib>=3.10.8",
     "pandas>=3.0.1",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "rich>=14.3.3",
     "torch>=2.10.0",
     "torchmetrics>=1.8.2",
     "torchvision>=0.25.0",
 ]
+
+[build-system]
+requires = ["setuptools>=80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find] # This installs the packages in the src folder
+where = ["src"]
