@@ -13,12 +13,12 @@ def identify_file_type(file_path):
         raise ValueError("Tipo de archivo no soportado. Solo se permiten .zip y .tgz")
 
 
-def download_and_extract(url, name):
+def download_and_extract(url, name, filetype=None):
     if os.path.exists(f"{DATA_DIR}/{name}"):
         print(f"El dataset {name} ya existe. Omitiendo descarga.")
         return
 
-    file_type = identify_file_type(url)
+    file_type = identify_file_type(url) if filetype is None else filetype
     file_path = f"{DATA_DIR}/{name}.{file_type}"
 
     print(f"Descargando dataset {name}...")
