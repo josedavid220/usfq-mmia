@@ -14,7 +14,8 @@ def identify_file_type(file_path):
 
 
 def download_and_extract(url, name, filetype=None):
-    if os.path.exists(f"{DATA_DIR}/{name}"):
+    folder_path = f"{DATA_DIR}/{name}"
+    if os.path.exists(folder_path):
         print(f"El dataset {name} ya existe. Omitiendo descarga.")
         return
 
@@ -28,13 +29,13 @@ def download_and_extract(url, name, filetype=None):
     if file_type == "tgz":
         print(f"Descomprimiendo dataset {name}...")
         subprocess.run(
-            ["tar", "-xzf", file_path, "-C", DATA_DIR],
+            ["tar", "-xzf", file_path, "-C", folder_path],
             check=True,
         )
         subprocess.run(["rm", file_path], check=True)
     elif file_type == "zip":
         with zipfile.ZipFile(file_path, "r") as zip_ref:
-            zip_ref.extractall(DATA_DIR)
+            zip_ref.extractall(folder_path)
             print("Descarga y extracción completadas.")
 
     # Remove the downloaded file after extraction
