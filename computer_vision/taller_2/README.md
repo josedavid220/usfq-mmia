@@ -1,4 +1,18 @@
 # Taller 2: Semantic Segmentation Pipeline
+## TLDR
+To run the interactive app, unzip the dataset in the `data` dir, unzip the logs in the `logs` dir (ask the author), and then run the following:
+- `make install`
+- `make gradio`
+
+This will launch an interactive app in `localhost:7860` that shows the metrics for each tried version in the leaderboard and allows inference for each track and frame. Currently the best version can be accessed at the checkpoint:
+```
+t2-t029-efficientnet-b2-dice/version_0/unet-timm-efficientnet-b2-dice-e09-miou0.6716.ckpt
+```
+
+In case the training curves are of interest, run:
+```
+make tensorboard
+```
 
 ## 1. Introduction
 
@@ -37,7 +51,7 @@ Important filters:
 
 - only frame ids `0000` to `0249` are used
 - samples without combined masks are discarded
-- splits are done **by track** (not random frame split) to avoid leakage
+- splits are done **by track** (not random frame split) to avoid leakage. The default validation and test tracks are olivermath and volcano_island, while all other tracks are used for training. The goal of this split is to evaluate how well the model generalizes to unseen tracks.
 
 ## 4. Reproduce Results
 
@@ -64,7 +78,7 @@ This generates:
 - a trained checkpoint
 - TensorBoard logs with metrics and validation visual examples
 
-### 4.4 Run experiment grid (high-end / Lightning-oriented workflow)
+### 4.4 Run experiment grid (high-end workflow)
 
 Default high-end command:
 
@@ -161,7 +175,7 @@ Additional tracking tricks:
 
 ### 5.4 Why the split is by track
 
-Splitting by track prevents the model from seeing nearly identical visual contexts across train/validation/test. This gives a more realistic estimate of generalization.
+Splitting by track prevents the model from seeing nearly identical visual contexts across train/validation/test. This gives a more realistic estimate of generalization. The results, however, are significantly worse on the tracks used for validation and testing, as we would have expected. Perhaps it would have been better to consider frames from all tracks. That could be an interesting variant to try.
 
 ## 6. Recommended Workflow
 
@@ -172,4 +186,3 @@ Splitting by track prevents the model from seeing nearly identical visual contex
 5. `make tensorboard` and `make gradio`
 6. pick best checkpoints and inspect qualitative behavior in Gradio
 
-This workflow is simple, reproducible, and aligned with the objective of comparing backbones and loss functions quickly.
