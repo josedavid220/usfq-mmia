@@ -18,7 +18,7 @@ PARALLEL_WORKERS ?= 4
 PRECISION ?= 16-mixed
 STRATEGY ?= auto
 
-.PHONY: help install clean-logs train-smoke train-local grid-local grid-highend grid-dry grid-resume tensorboard gradio leaderboard lint-fix format type-check run-hooks
+.PHONY: help install clean-logs train-smoke train-local grid-local grid-highend grid-dry grid-resume tensorboard gradio deploy leaderboard lint-fix format type-check run-hooks
 
 .DEFAULT_GOAL := grid-highend
 
@@ -32,6 +32,7 @@ help:
 	@echo "  make clean-logs     # remove logs content except .gitkeep"
 	@echo "  make tensorboard    # open logs in tensorboard"
 	@echo "  make gradio         # run visualizer"
+	@echo "  make deploy         # run visualizer with public sharing"
 	@echo "  make leaderboard    # print latest grid leaderboard top rows"
 	@echo "  make lint-fix       # ruff fix + format"
 	@echo "  make format         # formatting only"
@@ -153,6 +154,9 @@ tensorboard:
 
 gradio:
 	cd $(PROJECT_ROOT) && $(PYTHON) -m computer_vision.taller_2.visualization
+
+deploy:
+	cd $(PROJECT_ROOT) && $(PYTHON) -m computer_vision.taller_2.visualization --share
 
 leaderboard:
 	cd $(PROJECT_ROOT) && $(PYTHON) -c "from pathlib import Path; import csv; files=sorted(Path('logs/grid_runs').glob('*/leaderboard.csv'), reverse=True); print('No leaderboard.csv found under logs/grid_runs') if not files else None; path=files[0] if files else None; rows=[] if path is None else list(csv.DictReader(path.open('r', encoding='utf-8'))); print(f'Latest leaderboard: {path}') if path else None; print('Leaderboard is empty.') if path and not rows else None; [print(f\"#{r.get('rank')} | {r.get('encoder_name')} | {r.get('loss_name')} | val_miou={r.get('best_val_mean_iou')} | test_miou={r.get('test_mean_iou')}\") for r in rows[:10]]"

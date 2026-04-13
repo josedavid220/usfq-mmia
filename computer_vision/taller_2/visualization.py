@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import csv
 from pathlib import Path
@@ -648,8 +649,16 @@ def build_gradio_app() -> gr.Blocks:
 def main() -> None:
     """Launch Gradio visualizer."""
 
+    parser = argparse.ArgumentParser(description="Launch segmentation visualizer.")
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Enable public Gradio sharing link.",
+    )
+    args = parser.parse_args()
+
     app = build_gradio_app()
-    app.launch(share=False)
+    app.launch(share=args.share)
 
 
 if __name__ == "__main__":
