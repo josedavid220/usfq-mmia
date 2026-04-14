@@ -1,6 +1,6 @@
 # Taller 2: Semantic Segmentation Pipeline
 ## TLDR
-To run the interactive app, unzip the dataset in the `data` dir, unzip the logs in the `logs` dir (ask the author), and then run the following:
+To run the interactive app, install [uv](https://docs.astral.sh/uv/getting-started/installation), unzip the dataset in the `data` dir, unzip the logs in the `logs` dir (ask the author), and then run the following:
 - `make install`
 - `make gradio`
 
