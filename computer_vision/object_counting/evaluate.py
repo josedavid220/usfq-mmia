@@ -1,5 +1,6 @@
 import torch
-from utils import get_pennfudan_dataloaders, visualize_predictions
+from dataset import get_pennfudan_dataloaders
+from visualization import visualize_predictions
 from models import ObjectCountingModel
 
 def evaluate_model(model_path='object_counting_model.pth', batch_size=2, threshold=0.35):
