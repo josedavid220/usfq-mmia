@@ -136,8 +136,8 @@ class InferenceEngine:
             loaded = yaml.safe_load(handle) or {}
         return loaded if isinstance(loaded, dict) else {}
 
-    def _compute_test_metrics(self, checkpoint_path: str) -> dict[str, float]:
-        """Compute test metrics for one checkpoint.
+    def _compute_validation_metrics(self, checkpoint_path: str) -> dict[str, float]:
+        """Compute validation metrics for one checkpoint.
 
         Args:
             checkpoint_path: Checkpoint path.
@@ -151,8 +151,8 @@ class InferenceEngine:
 
         run_hparams = self._load_hparams_from_version_dir(checkpoint_path)
         data_root = run_hparams.get("data_root", "")
-        val_tracks = run_hparams.get("val_tracks", ["olivermath"])
-        test_tracks = run_hparams.get("test_tracks", ["volcano_island"])
+        val_fraction = float(run_hparams.get("val_fraction", 0.2))
+        val_minority_fraction = float(run_hparams.get("val_minority_fraction", 0.5))
         batch_size = int(run_hparams.get("batch_size", 8))
         crop_size = int(run_hparams.get("crop_size", 256))
         seed = int(run_hparams.get("seed", 42))
@@ -162,8 +162,8 @@ class InferenceEngine:
             data_root=data_root_path,
             batch_size=batch_size,
             crop_size=crop_size,
-            val_tracks=list(val_tracks),
-            test_tracks=list(test_tracks),
+            val_fraction=val_fraction,
+            val_minority_fraction=val_minority_fraction,
             seed=seed,
         )
         datamodule.prepare_data()
@@ -176,21 +176,21 @@ class InferenceEngine:
             enable_checkpointing=False,
             enable_progress_bar=False,
         )
-        test_results = trainer.test(model=self.model, datamodule=datamodule, verbose=False)
-        # Lightning test teardown can move model tensors back to CPU.
+        val_results = trainer.validate(model=self.model, datamodule=datamodule, verbose=False)
+        # Lightning validate teardown can move model tensors back to CPU.
         # Restore the model to the configured inference device.
         self.model.to(self.device)
         self.model.eval()
-        if not test_results:
+        if not val_results:
             return {}
         output = {}
-        for key, value in test_results[0].items():
+        for key, value in val_results[0].items():
             if isinstance(value, (int, float)):
                 output[key] = float(value)
         return output
 
     def get_checkpoint_metadata(self, checkpoint_path: str) -> dict[str, Any]:
-        """Get cached metadata with hyperparameters and test metrics.
+        """Get cached metadata with hyperparameters and validation metrics.
 
         Args:
             checkpoint_path: Checkpoint path.
@@ -205,14 +205,14 @@ class InferenceEngine:
         self.load(checkpoint_path)
         run_hparams = self._load_hparams_from_version_dir(checkpoint_path)
         model_hparams = dict(self.model.hparams) if self.model is not None else {}
-        test_metrics = self._compute_test_metrics(checkpoint_path)
+        validation_metrics = self._compute_validation_metrics(checkpoint_path)
 
         metadata = {
             "checkpoint_name": Path(checkpoint_path).name,
             "checkpoint_path": checkpoint_path,
             "run_hparams": run_hparams,
             "model_hparams": model_hparams,
-            "test_metrics": test_metrics,
+            "validation_metrics": validation_metrics,
         }
         self.metadata_cache[checkpoint_path] = metadata
         return metadata
@@ -375,7 +375,7 @@ def experiment_summary_markdown(metadata: dict[str, Any], track: str, frame_id: 
 
 
 def metrics_summary_markdown(metadata: dict[str, Any]) -> str:
-    """Format grouped test metrics for readability.
+    """Format grouped validation metrics for readability.
 
     Args:
         metadata: Checkpoint metadata dictionary.
@@ -384,15 +384,15 @@ def metrics_summary_markdown(metadata: dict[str, Any]) -> str:
         Markdown string with aggregate and per-class metrics.
     """
 
-    test_metrics = metadata.get("test_metrics", {})
-    if not test_metrics:
-        return "## Test Metrics\n- Test metrics not available for this checkpoint."
+    metrics = metadata.get("validation_metrics", {})
+    if not metrics:
+        return "## Validation Metrics\n- Validation metrics not available for this checkpoint."
 
-    lines = ["## Test Metrics", "### Aggregate"]
-    aggregate_keys = ["test_loss", "test_mean_iou", "test_mean_acc", "test_pixel_acc"]
+    lines = ["## Validation Metrics", "### Aggregate"]
+    aggregate_keys = ["val_loss", "val_mean_iou", "val_mean_acc", "val_pixel_acc"]
     for key in aggregate_keys:
-        if key in test_metrics:
-            lines.append(f"- {key}: {float(test_metrics[key]):.4f}")
+        if key in metrics:
+            lines.append(f"- {key}: {float(metrics[key]):.4f}")
 
     lines.extend([
         "",
@@ -401,10 +401,10 @@ def metrics_summary_markdown(metadata: dict[str, Any]) -> str:
         "|---|---:|---:|",
     ])
     for class_name in CLASS_NAMES:
-        iou_key = f"test_iou_{class_name}"
-        acc_key = f"test_acc_{class_name}"
-        iou_value = test_metrics.get(iou_key)
-        acc_value = test_metrics.get(acc_key)
+        iou_key = f"val_iou_{class_name}"
+        acc_key = f"val_acc_{class_name}"
+        iou_value = metrics.get(iou_key)
+        acc_value = metrics.get(acc_key)
         if iou_value is None and acc_value is None:
             continue
         iou_str = f"{float(iou_value):.4f}" if iou_value is not None else "-"
@@ -472,8 +472,8 @@ def load_leaderboard(path: str, top_k: int = 20) -> tuple[list[list[Any]], str]:
                 row.get("encoder_name", ""),
                 row.get("loss_name", ""),
                 row.get("best_val_mean_iou", ""),
-                row.get("test_mean_iou", ""),
-                row.get("test_mean_acc", ""),
+                row.get("val_mean_acc", ""),
+                row.get("val_pixel_acc", ""),
                 row.get("best_model_path", ""),
             ]
         )
@@ -487,7 +487,7 @@ def load_leaderboard(path: str, top_k: int = 20) -> tuple[list[list[Any]], str]:
             f"- Best backbone: {best.get('encoder_name', 'unknown')}",
             f"- Best loss: {best.get('loss_name', 'unknown')}",
             f"- Best validation mIoU: {best.get('best_val_mean_iou', 'unknown')}",
-            f"- Best test mIoU: {best.get('test_mean_iou', 'unknown')}",
+            f"- Best validation mean accuracy: {best.get('val_mean_acc', 'unknown')}",
         ]
     )
     return table_rows, summary
@@ -620,8 +620,8 @@ def build_gradio_app() -> gr.Blocks:
                         "encoder",
                         "loss",
                         "val_miou",
-                        "test_miou",
-                        "test_mean_acc",
+                        "val_mean_acc",
+                        "val_pixel_acc",
                         "checkpoint",
                     ],
                     datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],

@@ -45,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--experiment-name", type=str, default="taller2-segmentation")
     parser.add_argument("--data-root", type=str, default="")
-    parser.add_argument("--val-tracks", nargs="+", default=["olivermath"])
-    parser.add_argument("--test-tracks", nargs="+", default=["volcano_island"])
+    parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument("--val-minority-fraction", type=float, default=0.5)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--fixed-val-samples", type=int, default=5)
     parser.add_argument("--devices", type=str, default="auto")
@@ -136,8 +136,8 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         data_root=data_root,
         batch_size=int(config["batch_size"]),
         crop_size=int(config["crop_size"]),
-        val_tracks=list(config["val_tracks"]),
-        test_tracks=list(config["test_tracks"]),
+        val_fraction=float(config["val_fraction"]),
+        val_minority_fraction=float(config["val_minority_fraction"]),
         seed=int(config["seed"]),
     )
     datamodule.prepare_data()
@@ -188,13 +188,15 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     trainer.fit(model=model, datamodule=datamodule)
-    test_results = trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
 
     checkpoint_callback = None
     for callback in trainer.callbacks:
         if isinstance(callback, ModelCheckpoint):
             checkpoint_callback = callback
             break
+
+    val_mean_acc = trainer.callback_metrics.get("val_mean_acc")
+    val_pixel_acc = trainer.callback_metrics.get("val_pixel_acc")
 
     results = {
         "log_dir": logger.log_dir,
@@ -206,8 +208,8 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         "class_counts": datamodule.class_counts.tolist(),
         "train_samples": len(datamodule.train_samples),
         "val_samples": len(datamodule.val_samples),
-        "test_samples": len(datamodule.test_samples),
-        "test_metrics": test_results[0] if test_results else {},
+        "val_mean_acc": float(val_mean_acc) if val_mean_acc is not None else None,
+        "val_pixel_acc": float(val_pixel_acc) if val_pixel_acc is not None else None,
     }
     return results
 

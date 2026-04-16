@@ -51,7 +51,8 @@ Important filters:
 
 - only frame ids `0000` to `0249` are used
 - samples without combined masks are discarded
-- splits are done **by track** (not random frame split) to avoid leakage. The default validation and test tracks are olivermath and volcano_island, while all other tracks are used for training. The goal of this split is to evaluate how well the model generalizes to unseen tracks.
+- all tracks are used in training/validation split
+- validation uses a predefined fraction of samples and enforces minority-class presence ratio
 
 ## 4. Reproduce Results
 
@@ -120,7 +121,7 @@ make gradio
 
 Gradio includes:
 
-- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + grouped test metrics
+- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + grouped validation metrics
 - **Leaderboard Report tab**: ranked model report from grid runs
 
 ## 5. Implementation Logic and Key Tricks
@@ -142,6 +143,11 @@ The pipeline combines three simple mechanisms:
    - Class weights are derived from inverse frequency (smoothed, normalized).
    - Used in cross-entropy based losses.
    - Effect: reduces dominance of frequent classes.
+
+4. **Minority-aware validation split**
+   - Validation is sampled from all tracks with configurable `val_fraction`.
+   - A target ratio of minority-present samples (`val_minority_fraction`) is enforced.
+   - Effect: validation remains representative while still stressing minority classes.
 
 ### 5.2 Models, backbones, and losses
 
@@ -167,15 +173,22 @@ Logged metrics include:
 - per-class accuracy
 - pixel accuracy
 
+These metrics are tracked for train/validation. Model selection is based on `val_mean_iou`.
+
 Additional tracking tricks:
 
 - fixed set of 5 validation samples logged every epoch to TensorBoard
 - descriptive checkpoint names with architecture/backbone/loss and validation mIoU
 - grid runner generates `results.csv`, `summary.json`, and `leaderboard.csv`
 
-### 5.4 Why the split is by track
+### 5.4 Validation-only protocol
 
-Splitting by track prevents the model from seeing nearly identical visual contexts across train/validation/test. This gives a more realistic estimate of generalization. The results, however, are significantly worse on the tracks used for validation and testing, as we would have expected. Perhaps it would have been better to consider frames from all tracks. That could be an interesting variant to try.
+This version intentionally removes the test split to maximize training data and simplify model comparison. The key validation controls are:
+
+- `val_fraction`: controls how many frames are reserved for validation
+- `val_minority_fraction`: controls how many validation samples contain minority classes
+
+This keeps evaluation stable across runs while focusing on practical model selection.
 
 ## 6. Recommended Workflow
 

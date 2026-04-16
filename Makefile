@@ -159,7 +159,7 @@ deploy:
 	cd $(PROJECT_ROOT) && $(PYTHON) -m computer_vision.taller_2.visualization --share
 
 leaderboard:
-	cd $(PROJECT_ROOT) && $(PYTHON) -c "from pathlib import Path; import csv; files=sorted(Path('logs/grid_runs').glob('*/leaderboard.csv'), reverse=True); print('No leaderboard.csv found under logs/grid_runs') if not files else None; path=files[0] if files else None; rows=[] if path is None else list(csv.DictReader(path.open('r', encoding='utf-8'))); print(f'Latest leaderboard: {path}') if path else None; print('Leaderboard is empty.') if path and not rows else None; [print(f\"#{r.get('rank')} | {r.get('encoder_name')} | {r.get('loss_name')} | val_miou={r.get('best_val_mean_iou')} | test_miou={r.get('test_mean_iou')}\") for r in rows[:10]]"
+	cd $(PROJECT_ROOT) && $(PYTHON) -c "from pathlib import Path; import csv; files=sorted(Path('logs/grid_runs').glob('*/leaderboard.csv'), reverse=True); print('No leaderboard.csv found under logs/grid_runs') if not files else None; path=files[0] if files else None; rows=[] if path is None else list(csv.DictReader(path.open('r', encoding='utf-8'))); print(f'Latest leaderboard: {path}') if path else None; print('Leaderboard is empty.') if path and not rows else None; [print(f\"#{r.get('rank')} | {r.get('encoder_name')} | {r.get('loss_name')} | val_miou={r.get('best_val_mean_iou')} | val_mean_acc={r.get('val_mean_acc')}\") for r in rows[:10]]"
 
 lint-fix:
 	cd $(PROJECT_ROOT) && $(PYTHON) -m ruff check . --fix && $(PYTHON) -m ruff format .

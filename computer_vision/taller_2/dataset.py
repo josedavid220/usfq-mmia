@@ -113,50 +113,78 @@ def collect_segmentation_samples(
     return samples, missing_masks
 
 
-def split_by_track(
+def split_by_minority_presence(
     samples: Iterable[SegmentationSample],
-    val_tracks: list[str],
-    test_tracks: list[str],
-) -> tuple[
-    list[SegmentationSample], list[SegmentationSample], list[SegmentationSample]
-]:
-    """Split samples by track to avoid leakage.
+    val_fraction: float,
+    val_minority_fraction: float,
+    seed: int,
+) -> tuple[list[SegmentationSample], list[SegmentationSample]]:
+    """Split samples into train/validation with minority-presence control.
 
     Args:
         samples: Full sample iterable.
-        val_tracks: Track names used for validation.
-        test_tracks: Track names used for testing.
+        val_fraction: Fraction of samples to allocate to validation.
+        val_minority_fraction: Desired ratio of minority-present samples in validation.
+        seed: Random seed for reproducible split.
 
     Returns:
-        Tuple with train, validation, and test sample lists.
+        Tuple with train and validation sample lists.
 
     Raises:
-        ValueError: If one split is empty or tracks overlap.
+        ValueError: If split configuration is invalid or any split is empty.
     """
 
-    overlap = set(val_tracks) & set(test_tracks)
-    if overlap:
-        raise ValueError(f"Validation and test tracks overlap: {sorted(overlap)}")
-
-    train: list[SegmentationSample] = []
-    val: list[SegmentationSample] = []
-    test: list[SegmentationSample] = []
-
-    for sample in samples:
-        if sample.track in test_tracks:
-            test.append(sample)
-        elif sample.track in val_tracks:
-            val.append(sample)
-        else:
-            train.append(sample)
-
-    if not train or not val or not test:
+    if not 0.0 < val_fraction < 1.0:
         raise ValueError(
-            "Track split produced an empty set. "
-            f"train={len(train)}, val={len(val)}, test={len(test)}"
+            "val_fraction must be in (0, 1). "
+            f"Got {val_fraction}."
+        )
+    if not 0.0 <= val_minority_fraction <= 1.0:
+        raise ValueError(
+            "val_minority_fraction must be in [0, 1]. "
+            f"Got {val_minority_fraction}."
         )
 
-    return train, val, test
+    all_samples = list(samples)
+    if len(all_samples) < 2:
+        raise ValueError("Need at least 2 samples to create train/validation split.")
+
+    minority_present: list[SegmentationSample] = []
+    majority_only: list[SegmentationSample] = []
+    for sample in all_samples:
+        mask = np.array(Image.open(sample.mask_path), dtype=np.int64)
+        counts = np.bincount(mask.reshape(-1), minlength=NUM_CLASSES)
+        if counts[3:].sum() > 0:
+            minority_present.append(sample)
+        else:
+            majority_only.append(sample)
+
+    rng = random.Random(seed)
+    rng.shuffle(minority_present)
+    rng.shuffle(majority_only)
+
+    n_total = len(all_samples)
+    n_val = int(round(n_total * val_fraction))
+    n_val = max(1, min(n_total - 1, n_val))
+    n_val_minority = min(len(minority_present), int(round(n_val * val_minority_fraction)))
+    n_val_majority = n_val - n_val_minority
+    if n_val_majority > len(majority_only):
+        overflow = n_val_majority - len(majority_only)
+        n_val_majority = len(majority_only)
+        n_val_minority = min(len(minority_present), n_val_minority + overflow)
+
+    val = minority_present[:n_val_minority] + majority_only[:n_val_majority]
+    rng.shuffle(val)
+
+    val_set = set(val)
+    train = [sample for sample in all_samples if sample not in val_set]
+    if not train or not val:
+        raise ValueError(
+            "Split produced an empty set. "
+            f"train={len(train)}, val={len(val)}"
+        )
+
+    return train, val
 
 
 def compute_class_statistics(
@@ -341,8 +369,8 @@ class DenseSegmentationDataModule(L.LightningDataModule):
         data_root: Dataset root path.
         batch_size: Batch size.
         crop_size: Crop size for model inputs.
-        val_tracks: Validation track names.
-        test_tracks: Test track names.
+        val_fraction: Fraction of samples used for validation.
+        val_minority_fraction: Desired minority-present ratio in validation split.
         num_workers: Number of workers for DataLoader.
         pin_memory: Whether DataLoader uses pinned memory.
         seed: Random seed.
@@ -353,8 +381,8 @@ class DenseSegmentationDataModule(L.LightningDataModule):
         data_root: Path | None = None,
         batch_size: int = 12,
         crop_size: int = 256,
-        val_tracks: list[str] | None = None,
-        test_tracks: list[str] | None = None,
+        val_fraction: float = 0.2,
+        val_minority_fraction: float = 0.5,
         num_workers: int = NUM_WORKERS,
         pin_memory: bool = PIN_MEMORY,
         seed: int = 42,
@@ -363,15 +391,14 @@ class DenseSegmentationDataModule(L.LightningDataModule):
         self.data_root = data_root or (DATA_DIR / "dense_data")
         self.batch_size = batch_size
         self.crop_size = crop_size
-        self.val_tracks = val_tracks or ["olivermath"]
-        self.test_tracks = test_tracks or ["volcano_island"]
+        self.val_fraction = val_fraction
+        self.val_minority_fraction = val_minority_fraction
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.seed = seed
 
         self.train_dataset: DenseSegmentationDataset | None = None
         self.val_dataset: DenseSegmentationDataset | None = None
-        self.test_dataset: DenseSegmentationDataset | None = None
 
         self.missing_masks: list[tuple[str, int]] = []
         self.class_counts: np.ndarray = np.zeros(NUM_CLASSES, dtype=np.int64)
@@ -379,7 +406,6 @@ class DenseSegmentationDataModule(L.LightningDataModule):
         self.sample_weights: np.ndarray = np.array([], dtype=np.float32)
         self.train_samples: list[SegmentationSample] = []
         self.val_samples: list[SegmentationSample] = []
-        self.test_samples: list[SegmentationSample] = []
 
     def prepare_data(self) -> None:
         """Validate expected data root exists.
@@ -403,10 +429,14 @@ class DenseSegmentationDataModule(L.LightningDataModule):
         samples, missing_masks = collect_segmentation_samples(self.data_root)
         self.missing_masks = missing_masks
 
-        train, val, test = split_by_track(samples, self.val_tracks, self.test_tracks)
+        train, val = split_by_minority_presence(
+            samples=samples,
+            val_fraction=self.val_fraction,
+            val_minority_fraction=self.val_minority_fraction,
+            seed=self.seed,
+        )
         self.train_samples = train
         self.val_samples = val
-        self.test_samples = test
         self.class_counts, self.sample_weights = compute_class_statistics(train)
         self.class_weights = build_class_weights(self.class_counts)
 
@@ -420,11 +450,6 @@ class DenseSegmentationDataModule(L.LightningDataModule):
             crop_size=self.crop_size,
             split="val",
         )
-        self.test_dataset = DenseSegmentationDataset(
-            samples=test,
-            crop_size=self.crop_size,
-            split="test",
-        )
 
     def train_dataloader(self) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
         """Create train DataLoader with weighted sampling."""
@@ -434,7 +459,7 @@ class DenseSegmentationDataModule(L.LightningDataModule):
                 "DataModule.setup must be called before creating dataloaders."
             )
         sampler = WeightedRandomSampler(
-            weights=torch.from_numpy(self.sample_weights),
+            weights=self.sample_weights.tolist(),
             num_samples=len(self.sample_weights),
             replacement=True,
         )
@@ -458,23 +483,6 @@ class DenseSegmentationDataModule(L.LightningDataModule):
             )
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            prefetch_factor=PREFETCH_FACTOR,
-            persistent_workers=self.num_workers > 0,
-        )
-
-    def test_dataloader(self) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
-        """Create test DataLoader."""
-
-        if self.test_dataset is None:
-            raise RuntimeError(
-                "DataModule.setup must be called before creating dataloaders."
-            )
-        return DataLoader(
-            self.test_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,

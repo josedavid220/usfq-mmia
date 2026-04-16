@@ -81,8 +81,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=6)
     parser.add_argument("--fixed-val-samples", type=int, default=5)
     parser.add_argument("--encoder-weights", type=str, default="imagenet")
-    parser.add_argument("--val-tracks", type=str, default="olivermath")
-    parser.add_argument("--test-tracks", type=str, default="volcano_island")
+    parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument("--val-minority-fraction", type=float, default=0.5)
     parser.add_argument("--data-root", type=str, default="")
 
     parser.add_argument("--infra", type=str, default="local", choices=["local", "highend"])
@@ -178,9 +178,6 @@ def build_train_command(
         Tuple with command list and environment mapping.
     """
 
-    val_tracks = parse_csv_values(args.val_tracks, str)
-    test_tracks = parse_csv_values(args.test_tracks, str)
-
     accelerator = args.accelerator
     devices = args.devices
     if gpu_id is not None:
@@ -213,6 +210,10 @@ def build_train_command(
         str(args.patience),
         "--fixed-val-samples",
         str(args.fixed_val_samples),
+        "--val-fraction",
+        str(args.val_fraction),
+        "--val-minority-fraction",
+        str(args.val_minority_fraction),
         "--devices",
         devices,
         "--accelerator",
@@ -231,9 +232,6 @@ def build_train_command(
 
     if args.data_root:
         command.extend(["--data-root", args.data_root])
-
-    command.extend(["--val-tracks", *val_tracks])
-    command.extend(["--test-tracks", *test_tracks])
 
     env = os.environ.copy()
     if gpu_id is not None:
@@ -338,9 +336,8 @@ def run_trial(
             "command": " ".join(command),
             "elapsed_seconds": 0.0,
             "best_val_mean_iou": None,
-            "test_mean_iou": None,
-            "test_mean_acc": None,
-            "test_pixel_acc": None,
+            "val_mean_acc": None,
+            "val_pixel_acc": None,
             "best_model_path": "",
             "log_dir": "",
             "error": "",
@@ -370,9 +367,8 @@ def run_trial(
             "command": " ".join(command),
             "elapsed_seconds": round(elapsed, 2),
             "best_val_mean_iou": None,
-            "test_mean_iou": None,
-            "test_mean_acc": None,
-            "test_pixel_acc": None,
+            "val_mean_acc": None,
+            "val_pixel_acc": None,
             "best_model_path": "",
             "log_dir": "",
             "error": f"Return code {process.returncode}",
@@ -380,7 +376,6 @@ def run_trial(
 
     try:
         parsed = extract_last_json(process.stdout)
-        test_metrics = parsed.get("test_metrics", {})
         return {
             "trial_name": run_name,
             "status": "success",
@@ -388,9 +383,8 @@ def run_trial(
             "command": " ".join(command),
             "elapsed_seconds": round(elapsed, 2),
             "best_val_mean_iou": parsed.get("best_val_mean_iou"),
-            "test_mean_iou": test_metrics.get("test_mean_iou"),
-            "test_mean_acc": test_metrics.get("test_mean_acc"),
-            "test_pixel_acc": test_metrics.get("test_pixel_acc"),
+            "val_mean_acc": parsed.get("val_mean_acc"),
+            "val_pixel_acc": parsed.get("val_pixel_acc"),
             "best_model_path": parsed.get("best_model_path", ""),
             "log_dir": parsed.get("log_dir", ""),
             "error": "",
@@ -403,9 +397,8 @@ def run_trial(
             "command": " ".join(command),
             "elapsed_seconds": round(elapsed, 2),
             "best_val_mean_iou": None,
-            "test_mean_iou": None,
-            "test_mean_acc": None,
-            "test_pixel_acc": None,
+            "val_mean_acc": None,
+            "val_pixel_acc": None,
             "best_model_path": "",
             "log_dir": "",
             "error": str(error),
@@ -438,9 +431,8 @@ def write_leaderboard(output_dir: Path, rows: list[dict[str, Any]]) -> Path:
         "crop_size",
         "seed",
         "best_val_mean_iou",
-        "test_mean_iou",
-        "test_mean_acc",
-        "test_pixel_acc",
+        "val_mean_acc",
+        "val_pixel_acc",
         "elapsed_seconds",
         "best_model_path",
         "log_dir",
@@ -462,9 +454,8 @@ def write_leaderboard(output_dir: Path, rows: list[dict[str, Any]]) -> Path:
                     "crop_size": row.get("crop_size", ""),
                     "seed": row.get("seed", ""),
                     "best_val_mean_iou": row.get("best_val_mean_iou", ""),
-                    "test_mean_iou": row.get("test_mean_iou", ""),
-                    "test_mean_acc": row.get("test_mean_acc", ""),
-                    "test_pixel_acc": row.get("test_pixel_acc", ""),
+                    "val_mean_acc": row.get("val_mean_acc", ""),
+                    "val_pixel_acc": row.get("val_pixel_acc", ""),
                     "elapsed_seconds": row.get("elapsed_seconds", ""),
                     "best_model_path": row.get("best_model_path", ""),
                     "log_dir": row.get("log_dir", ""),
