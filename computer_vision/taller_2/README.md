@@ -121,8 +121,9 @@ make gradio
 
 Gradio includes:
 
-- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + grouped validation metrics
-- **Leaderboard Report tab**: ranked model report from grid runs
+- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + split aggregate/per-class validation metrics
+- **Leaderboard Report tab**: ranked model report from grid runs, where clicking a row loads that checkpoint into Inference
+- **TensorBoard tab**: embedded TensorBoard viewer (run `make tensorboard` first)
 
 ## 5. Implementation Logic and Key Tricks
 
@@ -156,6 +157,32 @@ Models are created through `segmentation_models_pytorch` (SMP) with configurable
 - Architecture examples: `Unet`, `UnetPlusPlus`
 - Encoder/backbone examples: `resnet18`, `resnet34`, `timm-efficientnet-b2`
 - Loss options: `cross_entropy`, `focal`, `dice`, `ce_dice`
+
+Losses tested (quick guide):
+
+- `cross_entropy`
+   - Definition: pixel-wise multiclass negative log-likelihood.
+   - Strength: strong and stable baseline, easy to optimize.
+   - Weakness: can underweight rare classes in highly imbalanced segmentation.
+   - Reference: Goodfellow et al., *Deep Learning*, 2016 (Chapter 6).
+
+- `focal`
+   - Definition: reweighted cross-entropy with factor $(1-p_t)^\gamma$ to downweight easy examples.
+   - Strength: improves learning on hard/minority pixels.
+   - Weakness: adds sensitivity to focusing hyperparameters.
+   - Reference: Lin et al., *Focal Loss for Dense Object Detection*, ICCV 2017.
+
+- `dice`
+   - Definition: overlap-based loss derived from Dice coefficient, directly optimizing region overlap.
+   - Strength: robust for class imbalance and thin/small objects.
+   - Weakness: can be less stable early in training without careful setup.
+   - Reference: Milletari et al., *V-Net*, 3DV 2016.
+
+- `ce_dice`
+   - Definition: weighted combination of cross-entropy and Dice losses.
+   - Strength: combines probabilistic calibration (CE) with overlap optimization (Dice).
+   - Weakness: requires balancing the two terms.
+   - Reference: Isensee et al., *nnU-Net*, Nature Methods 2021 (compound loss practice in segmentation).
 
 Why this design:
 
