@@ -69,23 +69,18 @@ class SegmentationLightningModule(L.LightningModule):
 
         self.train_iou_macro = MulticlassJaccardIndex(num_classes=num_classes, average="macro")
         self.val_iou_macro = MulticlassJaccardIndex(num_classes=num_classes, average="macro")
-        self.test_iou_macro = MulticlassJaccardIndex(num_classes=num_classes, average="macro")
 
         self.train_iou_per_class = MulticlassJaccardIndex(num_classes=num_classes, average=None)
         self.val_iou_per_class = MulticlassJaccardIndex(num_classes=num_classes, average=None)
-        self.test_iou_per_class = MulticlassJaccardIndex(num_classes=num_classes, average=None)
 
         self.train_acc_macro = MulticlassAccuracy(num_classes=num_classes, average="macro")
         self.val_acc_macro = MulticlassAccuracy(num_classes=num_classes, average="macro")
-        self.test_acc_macro = MulticlassAccuracy(num_classes=num_classes, average="macro")
 
         self.train_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
         self.val_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
-        self.test_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
 
         self.train_acc_micro = MulticlassAccuracy(num_classes=num_classes, average="micro")
         self.val_acc_micro = MulticlassAccuracy(num_classes=num_classes, average="micro")
-        self.test_acc_micro = MulticlassAccuracy(num_classes=num_classes, average="micro")
 
         self._dice_loss = smp.losses.DiceLoss(mode="multiclass", from_logits=True)
         self._focal_loss = smp.losses.FocalLoss(mode="multiclass")
@@ -182,18 +177,6 @@ class SegmentationLightningModule(L.LightningModule):
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
 
-    def test_step(self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
-        """Execute one test step and update test metrics."""
-
-        loss, preds, target = self._shared_step(batch)
-        self.test_iou_macro.update(preds, target)
-        self.test_iou_per_class.update(preds, target)
-        self.test_acc_macro.update(preds, target)
-        self.test_acc_per_class.update(preds, target)
-        self.test_acc_micro.update(preds, target)
-
-        self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-
     def _log_epoch_metrics(
         self,
         stage: str,
@@ -220,7 +203,7 @@ class SegmentationLightningModule(L.LightningModule):
         acc_pc = acc_per_class.compute()
         micro_acc = acc_micro.compute()
 
-        self.log(f"{stage}_mean_iou", macro_iou, prog_bar=stage != "test")
+        self.log(f"{stage}_mean_iou", macro_iou, prog_bar=True)
         self.log(f"{stage}_mean_acc", macro_acc, prog_bar=False)
         self.log(f"{stage}_pixel_acc", micro_acc, prog_bar=False)
 
@@ -259,18 +242,6 @@ class SegmentationLightningModule(L.LightningModule):
             acc_micro=self.val_acc_micro,
         )
         self._log_fixed_validation_examples()
-
-    def on_test_epoch_end(self) -> None:
-        """Log test metrics at epoch end."""
-
-        self._log_epoch_metrics(
-            stage="test",
-            iou_macro=self.test_iou_macro,
-            iou_per_class=self.test_iou_per_class,
-            acc_macro=self.test_acc_macro,
-            acc_per_class=self.test_acc_per_class,
-            acc_micro=self.test_acc_micro,
-        )
 
     def _denormalize(self, image: torch.Tensor) -> torch.Tensor:
         """Convert normalized image tensor back to display range.
