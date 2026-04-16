@@ -18,6 +18,9 @@ import torch
 from PIL import Image
 import yaml
 
+from dotenv import load_dotenv
+import os
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
@@ -25,8 +28,14 @@ if str(SRC_DIR) not in sys.path:
 
 from settings import DATA_DIR, LOGS_DIR
 
-from computer_vision.taller_2.dataset import CLASS_NAMES, DEFAULT_COLORS, DenseSegmentationDataModule
+from computer_vision.taller_2.dataset import (
+    CLASS_NAMES,
+    DEFAULT_COLORS,
+    DenseSegmentationDataModule,
+)
 from computer_vision.taller_2.model import SegmentationLightningModule
+
+load_dotenv()
 
 
 def denormalize_image(image: torch.Tensor) -> np.ndarray:
@@ -39,8 +48,12 @@ def denormalize_image(image: torch.Tensor) -> np.ndarray:
         HWC image in [0, 1].
     """
 
-    mean = torch.tensor([0.485, 0.456, 0.406], dtype=image.dtype, device=image.device).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], dtype=image.dtype, device=image.device).view(3, 1, 1)
+    mean = torch.tensor(
+        [0.485, 0.456, 0.406], dtype=image.dtype, device=image.device
+    ).view(3, 1, 1)
+    std = torch.tensor(
+        [0.229, 0.224, 0.225], dtype=image.dtype, device=image.device
+    ).view(3, 1, 1)
     output = image * std + mean
     output = torch.clamp(output, 0.0, 1.0)
     return output.permute(1, 2, 0).cpu().numpy()
@@ -77,9 +90,17 @@ def load_sample(track: str, frame_id: int) -> tuple[torch.Tensor, np.ndarray]:
     """
 
     image_path = DATA_DIR / "dense_data" / track / "frame" / f"frame_{frame_id:04d}.png"
-    mask_path = DATA_DIR / "dense_data" / track / "combined" / f"mask_combined_{frame_id:04d}.png"
+    mask_path = (
+        DATA_DIR
+        / "dense_data"
+        / track
+        / "combined"
+        / f"mask_combined_{frame_id:04d}.png"
+    )
     if not image_path.exists() or not mask_path.exists():
-        raise FileNotFoundError(f"Missing image or mask for {track} frame {frame_id:04d}")
+        raise FileNotFoundError(
+            f"Missing image or mask for {track} frame {frame_id:04d}"
+        )
 
     image_np = np.array(Image.open(image_path).convert("RGB"), dtype=np.uint8)
     image = torch.from_numpy(image_np).permute(2, 0, 1).float() / 255.0
@@ -179,7 +200,9 @@ class InferenceEngine:
             enable_checkpointing=False,
             enable_progress_bar=False,
         )
-        val_results = trainer.validate(model=self.model, datamodule=datamodule, verbose=False)
+        val_results = trainer.validate(
+            model=self.model, datamodule=datamodule, verbose=False
+        )
         # Lightning validate teardown can move model tensors back to CPU.
         # Restore the model to the configured inference device.
         self.model.to(self.device)
@@ -457,7 +480,11 @@ def legend_html() -> str:
 
     chips = []
     for class_id, rgb in DEFAULT_COLORS.items():
-        name = CLASS_NAMES[class_id] if class_id < len(CLASS_NAMES) else f"class_{class_id}"
+        name = (
+            CLASS_NAMES[class_id]
+            if class_id < len(CLASS_NAMES)
+            else f"class_{class_id}"
+        )
         chip = (
             "<span style='display:inline-flex;align-items:center;margin-right:12px;margin-bottom:8px;'>"
             f"<span style='width:16px;height:16px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"
@@ -468,7 +495,9 @@ def legend_html() -> str:
     return "<div style='padding:8px 0;'>" + "".join(chips) + "</div>"
 
 
-def experiment_summary_markdown(metadata: dict[str, Any], track: str, frame_id: int, device: str) -> str:
+def experiment_summary_markdown(
+    metadata: dict[str, Any], track: str, frame_id: int, device: str
+) -> str:
     """Format compact experiment summary for selected checkpoint/frame.
 
     Args:
@@ -483,8 +512,12 @@ def experiment_summary_markdown(metadata: dict[str, Any], track: str, frame_id: 
 
     run_hparams = metadata.get("run_hparams", {})
     model_hparams = metadata.get("model_hparams", {})
-    architecture = model_hparams.get("architecture", run_hparams.get("architecture", "unknown"))
-    encoder_name = model_hparams.get("encoder_name", run_hparams.get("encoder_name", "unknown"))
+    architecture = model_hparams.get(
+        "architecture", run_hparams.get("architecture", "unknown")
+    )
+    encoder_name = model_hparams.get(
+        "encoder_name", run_hparams.get("encoder_name", "unknown")
+    )
     loss_name = model_hparams.get("loss_name", run_hparams.get("loss_name", "unknown"))
 
     lines = [
@@ -646,7 +679,9 @@ def build_gradio_app() -> gr.Blocks:
         Configured Gradio Blocks instance.
     """
 
-    tracks = sorted([path.name for path in (DATA_DIR / "dense_data").iterdir() if path.is_dir()])
+    tracks = sorted(
+        [path.name for path in (DATA_DIR / "dense_data").iterdir() if path.is_dir()]
+    )
     choices = checkpoint_choices(LOGS_DIR)
     if not choices:
         choices = [("No checkpoints found", "")]
@@ -657,7 +692,9 @@ def build_gradio_app() -> gr.Blocks:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     engine = InferenceEngine(device=device)
 
-    def _predict(ckpt_path: str, track: str, frame_id: int) -> tuple[np.ndarray, str, str, str]:
+    def _predict(
+        ckpt_path: str, track: str, frame_id: int
+    ) -> tuple[np.ndarray, str, str, str]:
         """Infer and render one selection from UI controls."""
 
         if not ckpt_path:
@@ -741,7 +778,10 @@ def build_gradio_app() -> gr.Blocks:
         if not Path(checkpoint_path).exists():
             return gr.Dropdown(), f"Checkpoint not found on disk: {checkpoint_path}"
 
-        return gr.Dropdown(value=checkpoint_path), f"Selected model loaded in Inference tab: {selected_row[1]}"
+        return (
+            gr.Dropdown(value=checkpoint_path),
+            f"Selected model loaded in Inference tab: {selected_row[1]}",
+        )
 
     def _tensorboard_iframe(url: str) -> str:
         """Build embeddable iframe markup for TensorBoard.
@@ -784,7 +824,11 @@ def build_gradio_app() -> gr.Blocks:
         frame_ids = list_available_frames(track)
         if not frame_ids:
             return gr.Slider(value=0), [], f"No valid frames found for track: {track}"
-        return gr.Slider(value=frame_ids[0]), frame_ids, f"Loaded {len(frame_ids)} valid frames for {track}."
+        return (
+            gr.Slider(value=frame_ids[0]),
+            frame_ids,
+            f"Loaded {len(frame_ids)} valid frames for {track}.",
+        )
 
     def _step_frame(current_frame: int, frame_ids: list[int], direction: int) -> int:
         """Move one step over available frame ids.
@@ -890,7 +934,9 @@ def build_gradio_app() -> gr.Blocks:
                 frame_id=int(frame_id),
                 image=image,
             )
-            frames.append(render_video_frame(image=image, ground_truth=mask, prediction=pred))
+            frames.append(
+                render_video_frame(image=image, ground_truth=mask, prediction=pred)
+            )
             progress(idx / total, desc=f"Rendering GIF frames... ({idx}/{total})")
 
         output_dir = LOGS_DIR / "visualizer_videos"
@@ -921,7 +967,11 @@ def build_gradio_app() -> gr.Blocks:
             Cleared GIF file/preview and loading message.
         """
 
-        return gr.update(value=None, visible=False), "", "Generating GIF, please wait..."
+        return (
+            gr.update(value=None, visible=False),
+            "",
+            "Generating GIF, please wait...",
+        )
 
     app_css = """
     .big-frame-btn button {
@@ -953,21 +1003,41 @@ def build_gradio_app() -> gr.Blocks:
                         value=choices[0][1],
                         label="Checkpoint",
                     )
-                    track_input = gr.Dropdown(choices=tracks, value=tracks[0], label="Track")
-                    frame_input = gr.Slider(minimum=0, maximum=249, value=initial_frame, step=1, label="Frame ID")
+                    track_input = gr.Dropdown(
+                        choices=tracks, value=tracks[0], label="Track"
+                    )
+                    frame_input = gr.Slider(
+                        minimum=0,
+                        maximum=249,
+                        value=initial_frame,
+                        step=1,
+                        label="Frame ID",
+                    )
 
                 with gr.Row():
                     refresh_button = gr.Button("Refresh Checkpoints")
                     run_button = gr.Button("Run Inference", variant="primary")
 
                 with gr.Row():
-                    prev_button = gr.Button("◀ Prev Frame", variant="secondary", elem_classes=["big-frame-btn"])
-                    next_button = gr.Button("Next Frame ▶", variant="secondary", elem_classes=["big-frame-btn"])
+                    prev_button = gr.Button(
+                        "◀ Prev Frame",
+                        variant="secondary",
+                        elem_classes=["big-frame-btn"],
+                    )
+                    next_button = gr.Button(
+                        "Next Frame ▶",
+                        variant="secondary",
+                        elem_classes=["big-frame-btn"],
+                    )
                     cache_track_button = gr.Button("Cache Track Predictions")
-                    export_video_button = gr.Button("Generate Track GIF", variant="primary")
+                    export_video_button = gr.Button(
+                        "Generate Track GIF", variant="primary"
+                    )
 
                 with gr.Row():
-                    export_fps_input = gr.Slider(minimum=2, maximum=30, value=8, step=1, label="GIF FPS")
+                    export_fps_input = gr.Slider(
+                        minimum=2, maximum=30, value=8, step=1, label="GIF FPS"
+                    )
                     export_stride_input = gr.Slider(
                         minimum=1,
                         maximum=10,
@@ -983,17 +1053,27 @@ def build_gradio_app() -> gr.Blocks:
                         label="Max Frames (0 = all)",
                     )
 
-                playback_status = gr.Markdown(value="Manual mode. Use Prev/Next and slider for navigation.")
-                export_status = gr.Markdown(value="Generate a track GIF for smooth qualitative review.")
+                playback_status = gr.Markdown(
+                    value="Manual mode. Use Prev/Next and slider for navigation."
+                )
+                export_status = gr.Markdown(
+                    value="Generate a track GIF for smooth qualitative review."
+                )
 
                 output_image = gr.Image(label="Visualization", type="numpy")
-                output_gif = gr.Image(label="Generated Track GIF", type="filepath", visible=False)
+                output_gif = gr.Image(
+                    label="Generated Track GIF", type="filepath", visible=False
+                )
                 output_gif_preview = gr.HTML(label="GIF Playback")
 
                 with gr.Row():
                     experiment_text = gr.Markdown(label="Experiment")
-                    aggregate_metrics_text = gr.Markdown(label="Aggregate Validation Metrics")
-                    per_class_metrics_text = gr.Markdown(label="Per-Class Validation Metrics")
+                    aggregate_metrics_text = gr.Markdown(
+                        label="Aggregate Validation Metrics"
+                    )
+                    per_class_metrics_text = gr.Markdown(
+                        label="Per-Class Validation Metrics"
+                    )
 
                 refresh_button.click(
                     fn=_refresh_checkpoints,
@@ -1003,13 +1083,23 @@ def build_gradio_app() -> gr.Blocks:
                 run_button.click(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                    outputs=[
+                        output_image,
+                        experiment_text,
+                        aggregate_metrics_text,
+                        per_class_metrics_text,
+                    ],
                 )
 
                 frame_input.change(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                    outputs=[
+                        output_image,
+                        experiment_text,
+                        aggregate_metrics_text,
+                        per_class_metrics_text,
+                    ],
                 )
 
                 track_input.change(
@@ -1019,7 +1109,12 @@ def build_gradio_app() -> gr.Blocks:
                 ).then(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                    outputs=[
+                        output_image,
+                        experiment_text,
+                        aggregate_metrics_text,
+                        per_class_metrics_text,
+                    ],
                 )
 
                 prev_button.click(
@@ -1029,7 +1124,12 @@ def build_gradio_app() -> gr.Blocks:
                 ).then(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                    outputs=[
+                        output_image,
+                        experiment_text,
+                        aggregate_metrics_text,
+                        per_class_metrics_text,
+                    ],
                 )
 
                 next_button.click(
@@ -1039,7 +1139,12 @@ def build_gradio_app() -> gr.Blocks:
                 ).then(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                    outputs=[
+                        output_image,
+                        experiment_text,
+                        aggregate_metrics_text,
+                        per_class_metrics_text,
+                    ],
                 )
 
                 cache_track_button.click(
@@ -1073,7 +1178,9 @@ def build_gradio_app() -> gr.Blocks:
                         value=report_choices[0][1],
                         label="Grid Run Report",
                     )
-                    topk_input = gr.Slider(minimum=5, maximum=100, value=20, step=1, label="Top K rows")
+                    topk_input = gr.Slider(
+                        minimum=5, maximum=100, value=20, step=1, label="Top K rows"
+                    )
 
                 with gr.Row():
                     refresh_report_button = gr.Button("Refresh Reports")
@@ -1091,7 +1198,17 @@ def build_gradio_app() -> gr.Blocks:
                         "val_pixel_acc",
                         "checkpoint",
                     ],
-                    datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                    datatype=[
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                    ],
                     row_count=20,
                     column_count=9,
                     wrap=True,
@@ -1127,10 +1244,20 @@ def build_gradio_app() -> gr.Blocks:
                     "Start TensorBoard first with `make tensorboard`, then load the URL below."
                 )
                 with gr.Row():
-                    tb_url = gr.Textbox(value="http://localhost:6006", label="TensorBoard URL")
+                    tb_url = gr.Textbox(
+                        value=os.getenv("TENSORBOARD_URL"), label="TensorBoard URL"
+                    )
                     tb_load = gr.Button("Load TensorBoard", variant="primary")
-                tb_frame = gr.HTML(value=_tensorboard_iframe("http://localhost:6006"), label="TensorBoard Viewer")
-                tb_load.click(fn=_tensorboard_iframe, inputs=[tb_url], outputs=[tb_frame])
+
+                tb_frame = gr.HTML(
+                    value=_tensorboard_iframe(
+                        os.getenv("TENSORBOARD_URL", "http://localhost:6006")
+                    ),
+                    label="TensorBoard Viewer",
+                )
+                tb_load.click(
+                    fn=_tensorboard_iframe, inputs=[tb_url], outputs=[tb_frame]
+                )
 
     return app
 
