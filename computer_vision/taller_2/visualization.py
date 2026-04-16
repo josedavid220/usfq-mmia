@@ -100,6 +100,7 @@ class InferenceEngine:
         self.current_ckpt: str | None = None
         self.model: SegmentationLightningModule | None = None
         self.metadata_cache: dict[str, dict[str, Any]] = {}
+        self.prediction_cache: dict[tuple[str, str, int], np.ndarray] = {}
 
     def load(self, checkpoint_path: str) -> None:
         """Load model checkpoint if needed.
@@ -242,6 +243,89 @@ class InferenceEngine:
             pred = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
         return pred
 
+    def predict_with_cache(
+        self,
+        checkpoint_path: str,
+        track: str,
+        frame_id: int,
+        image: torch.Tensor,
+    ) -> np.ndarray:
+        """Predict one frame with a cache keyed by checkpoint/track/frame.
+
+        Args:
+            checkpoint_path: Model checkpoint path.
+            track: Track name.
+            frame_id: Frame id.
+            image: Normalized frame tensor.
+
+        Returns:
+            Predicted class-index mask.
+        """
+
+        cache_key = (checkpoint_path, track, int(frame_id))
+        cached = self.prediction_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        self.load(checkpoint_path)
+        pred = self.predict(image)
+        self.prediction_cache[cache_key] = pred
+        return pred
+
+    def warmup_track_predictions(
+        self,
+        checkpoint_path: str,
+        track: str,
+        frame_ids: list[int],
+    ) -> tuple[int, int]:
+        """Precompute predictions for all selected frames in one track.
+
+        Args:
+            checkpoint_path: Model checkpoint path.
+            track: Track name.
+            frame_ids: Frame ids to precompute.
+
+        Returns:
+            Tuple with (newly_cached, already_cached).
+        """
+
+        self.load(checkpoint_path)
+        newly_cached = 0
+        already_cached = 0
+        for frame_id in frame_ids:
+            cache_key = (checkpoint_path, track, int(frame_id))
+            if cache_key in self.prediction_cache:
+                already_cached += 1
+                continue
+            image, _ = load_sample(track=track, frame_id=int(frame_id))
+            self.prediction_cache[cache_key] = self.predict(image)
+            newly_cached += 1
+        return newly_cached, already_cached
+
+
+def list_available_frames(track: str) -> list[int]:
+    """List valid frame ids for one track.
+
+    Args:
+        track: Track name.
+
+    Returns:
+        Sorted frame ids with both image and combined mask available.
+    """
+
+    frame_dir = DATA_DIR / "dense_data" / track / "frame"
+    combined_dir = DATA_DIR / "dense_data" / track / "combined"
+    if not frame_dir.exists() or not combined_dir.exists():
+        return []
+
+    available: list[int] = []
+    for frame_id in range(250):
+        image_path = frame_dir / f"frame_{frame_id:04d}.png"
+        mask_path = combined_dir / f"mask_combined_{frame_id:04d}.png"
+        if image_path.exists() and mask_path.exists():
+            available.append(frame_id)
+    return available
+
 
 def render_comparison(
     image: torch.Tensor,
@@ -374,32 +458,49 @@ def experiment_summary_markdown(metadata: dict[str, Any], track: str, frame_id: 
     return "\n".join(lines)
 
 
-def metrics_summary_markdown(metadata: dict[str, Any]) -> str:
-    """Format grouped validation metrics for readability.
+def aggregate_metrics_markdown(metadata: dict[str, Any]) -> str:
+    """Format aggregate validation metrics.
 
     Args:
         metadata: Checkpoint metadata dictionary.
 
     Returns:
-        Markdown string with aggregate and per-class metrics.
+        Markdown string with aggregate validation metrics.
     """
 
     metrics = metadata.get("validation_metrics", {})
     if not metrics:
-        return "## Validation Metrics\n- Validation metrics not available for this checkpoint."
+        return "## Aggregate Validation Metrics\n- Validation metrics not available for this checkpoint."
 
-    lines = ["## Validation Metrics", "### Aggregate"]
+    lines = ["## Aggregate Validation Metrics"]
     aggregate_keys = ["val_loss", "val_mean_iou", "val_mean_acc", "val_pixel_acc"]
     for key in aggregate_keys:
         if key in metrics:
             lines.append(f"- {key}: {float(metrics[key]):.4f}")
 
-    lines.extend([
-        "",
-        "### Per-Class",
+    return "\n".join(lines)
+
+
+def per_class_metrics_markdown(metadata: dict[str, Any]) -> str:
+    """Format per-class validation metrics table.
+
+    Args:
+        metadata: Checkpoint metadata dictionary.
+
+    Returns:
+        Markdown string with per-class IoU and accuracy.
+    """
+
+    metrics = metadata.get("validation_metrics", {})
+    if not metrics:
+        return "## Per-Class Validation Metrics\n- Validation metrics not available for this checkpoint."
+
+    lines = [
+        "## Per-Class Validation Metrics",
         "| Class | IoU | Accuracy |",
         "|---|---:|---:|",
-    ])
+    ]
+
     for class_name in CLASS_NAMES:
         iou_key = f"val_iou_{class_name}"
         acc_key = f"val_acc_{class_name}"
@@ -511,17 +612,22 @@ def build_gradio_app() -> gr.Blocks:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     engine = InferenceEngine(device=device)
 
-    def _predict(ckpt_path: str, track: str, frame_id: int) -> tuple[np.ndarray, str, str]:
+    def _predict(ckpt_path: str, track: str, frame_id: int) -> tuple[np.ndarray, str, str, str]:
         """Infer and render one selection from UI controls."""
 
         if not ckpt_path:
             blank = np.zeros((450, 1450, 3), dtype=np.uint8)
             msg = "## No checkpoint found in logs yet."
-            return blank, msg, msg
+            return blank, msg, msg, msg
 
         image, mask = load_sample(track=track, frame_id=int(frame_id))
         metadata = engine.get_checkpoint_metadata(ckpt_path)
-        pred = engine.predict(image)
+        pred = engine.predict_with_cache(
+            checkpoint_path=ckpt_path,
+            track=track,
+            frame_id=int(frame_id),
+            image=image,
+        )
         render = render_comparison(
             image=image,
             ground_truth=mask,
@@ -533,8 +639,9 @@ def build_gradio_app() -> gr.Blocks:
             frame_id=int(frame_id),
             device=device,
         )
-        metrics_text = metrics_summary_markdown(metadata=metadata)
-        return render, experiment_text, metrics_text
+        aggregate_text = aggregate_metrics_markdown(metadata=metadata)
+        per_class_text = per_class_metrics_markdown(metadata=metadata)
+        return render, experiment_text, aggregate_text, per_class_text
 
     def _refresh_checkpoints() -> gr.Dropdown:
         """Refresh checkpoint dropdown choices from logs."""
@@ -557,7 +664,140 @@ def build_gradio_app() -> gr.Blocks:
 
         return load_leaderboard(path=path, top_k=int(top_k))
 
+    def _select_model_from_report(
+        report_rows: list[list[Any]],
+        evt: gr.SelectData,
+    ) -> tuple[gr.Dropdown, str]:
+        """Use selected leaderboard row to populate inference checkpoint.
+
+        Args:
+            report_rows: Rendered leaderboard table rows.
+            evt: Selection event payload from dataframe.
+
+        Returns:
+            Updated checkpoint dropdown and status markdown.
+        """
+
+        if not report_rows:
+            return gr.Dropdown(), "No report rows loaded yet."
+
+        row_index = evt.index[0] if isinstance(evt.index, tuple) else int(evt.index)
+        if row_index < 0 or row_index >= len(report_rows):
+            return gr.Dropdown(), "Selected row is out of bounds."
+
+        selected_row = report_rows[row_index]
+        if len(selected_row) < 9:
+            return gr.Dropdown(), "Selected row is missing checkpoint information."
+
+        checkpoint_path = str(selected_row[8])
+        if not checkpoint_path:
+            return gr.Dropdown(), "Selected row has an empty checkpoint path."
+
+        if not Path(checkpoint_path).exists():
+            return gr.Dropdown(), f"Checkpoint not found on disk: {checkpoint_path}"
+
+        return gr.Dropdown(value=checkpoint_path), f"Selected model loaded in Inference tab: {selected_row[1]}"
+
+    def _tensorboard_iframe(url: str) -> str:
+        """Build embeddable iframe markup for TensorBoard.
+
+        Args:
+            url: TensorBoard URL.
+
+        Returns:
+            HTML string containing iframe or usage message.
+        """
+
+        normalized = (url or "").strip()
+        if not normalized:
+            return (
+                "<div style='padding:12px;border:1px solid #ccc;border-radius:8px;'>"
+                "Provide a TensorBoard URL (for example http://localhost:6006)."
+                "</div>"
+            )
+        if not normalized.startswith(("http://", "https://")):
+            normalized = f"http://{normalized}"
+        return (
+            "<iframe "
+            f"src='{normalized}' "
+            "style='width:100%;height:760px;border:1px solid #ddd;border-radius:8px;' "
+            "referrerpolicy='no-referrer' "
+            "loading='lazy'>"
+            "</iframe>"
+        )
+
+    def _on_track_change(track: str) -> tuple[gr.Slider, list[int], str]:
+        """Update frame controls for selected track.
+
+        Args:
+            track: Selected track.
+
+        Returns:
+            Updated slider, frame list state, and status text.
+        """
+
+        frame_ids = list_available_frames(track)
+        if not frame_ids:
+            return gr.Slider(value=0), [], f"No valid frames found for track: {track}"
+        return gr.Slider(value=frame_ids[0]), frame_ids, f"Loaded {len(frame_ids)} valid frames for {track}."
+
+    def _step_frame(current_frame: int, frame_ids: list[int], direction: int) -> int:
+        """Move one step over available frame ids.
+
+        Args:
+            current_frame: Current frame value.
+            frame_ids: Available frame ids.
+            direction: Step direction (-1 or +1).
+
+        Returns:
+            Next frame id.
+        """
+
+        if not frame_ids:
+            return int(current_frame)
+        current = int(current_frame)
+        if current not in frame_ids:
+            return frame_ids[0]
+        index = frame_ids.index(current)
+        return frame_ids[(index + direction) % len(frame_ids)]
+
+    def _warmup_track_cache(ckpt_path: str, track: str, frame_ids: list[int]) -> str:
+        """Precompute and cache predictions for current track.
+
+        Args:
+            ckpt_path: Checkpoint path.
+            track: Selected track.
+            frame_ids: Frames to precompute.
+
+        Returns:
+            Status summary string.
+        """
+
+        if not ckpt_path:
+            return "Select a checkpoint before caching predictions."
+        if not frame_ids:
+            return "No valid frames to cache for this track."
+        newly_cached, already_cached = engine.warmup_track_predictions(
+            checkpoint_path=ckpt_path,
+            track=track,
+            frame_ids=frame_ids,
+        )
+        return (
+            f"Caching done for {track}: new={newly_cached}, already_cached={already_cached}, "
+            f"total_frames={len(frame_ids)}"
+        )
+
+    app_css = """
+    .big-frame-btn button {
+        min-height: 56px !important;
+        font-size: 1.15rem !important;
+        font-weight: 700 !important;
+        padding: 0.8rem 1rem !important;
+    }
+    """
+
     with gr.Blocks(title="Taller 2 Segmentation Visualizer") as app:
+        gr.HTML(f"<style>{app_css}</style>")
         gr.Markdown("# Taller 2 Semantic Segmentation Visualizer")
         gr.Markdown(
             "Compare predictions and inspect experiment reports from grid runs. "
@@ -567,6 +807,9 @@ def build_gradio_app() -> gr.Blocks:
         with gr.Tabs():
             with gr.Tab("Inference"):
                 gr.HTML(value=legend_html(), label="Class Legend")
+                initial_frames = list_available_frames(tracks[0]) if tracks else []
+                initial_frame = initial_frames[0] if initial_frames else 0
+                frame_ids_state = gr.State(initial_frames)
 
                 with gr.Row():
                     ckpt_input = gr.Dropdown(
@@ -575,17 +818,25 @@ def build_gradio_app() -> gr.Blocks:
                         label="Checkpoint",
                     )
                     track_input = gr.Dropdown(choices=tracks, value=tracks[0], label="Track")
-                    frame_input = gr.Slider(minimum=0, maximum=249, value=0, step=1, label="Frame ID")
+                    frame_input = gr.Slider(minimum=0, maximum=249, value=initial_frame, step=1, label="Frame ID")
 
                 with gr.Row():
                     refresh_button = gr.Button("Refresh Checkpoints")
                     run_button = gr.Button("Run Inference", variant="primary")
 
+                with gr.Row():
+                    prev_button = gr.Button("◀ Prev Frame", variant="secondary", elem_classes=["big-frame-btn"])
+                    next_button = gr.Button("Next Frame ▶", variant="secondary", elem_classes=["big-frame-btn"])
+                    cache_track_button = gr.Button("Cache Track Predictions")
+
+                playback_status = gr.Markdown(value="Manual mode. Use Prev/Next and slider for navigation.")
+
                 output_image = gr.Image(label="Visualization", type="numpy")
 
                 with gr.Row():
                     experiment_text = gr.Markdown(label="Experiment")
-                    metrics_text = gr.Markdown(label="Test Metrics")
+                    aggregate_metrics_text = gr.Markdown(label="Aggregate Validation Metrics")
+                    per_class_metrics_text = gr.Markdown(label="Per-Class Validation Metrics")
 
                 refresh_button.click(
                     fn=_refresh_checkpoints,
@@ -595,7 +846,49 @@ def build_gradio_app() -> gr.Blocks:
                 run_button.click(
                     fn=_predict,
                     inputs=[ckpt_input, track_input, frame_input],
-                    outputs=[output_image, experiment_text, metrics_text],
+                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                )
+
+                frame_input.change(
+                    fn=_predict,
+                    inputs=[ckpt_input, track_input, frame_input],
+                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                )
+
+                track_input.change(
+                    fn=_on_track_change,
+                    inputs=[track_input],
+                    outputs=[frame_input, frame_ids_state, playback_status],
+                ).then(
+                    fn=_predict,
+                    inputs=[ckpt_input, track_input, frame_input],
+                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                )
+
+                prev_button.click(
+                    fn=lambda frame_id, frame_ids: _step_frame(frame_id, frame_ids, -1),
+                    inputs=[frame_input, frame_ids_state],
+                    outputs=[frame_input],
+                ).then(
+                    fn=_predict,
+                    inputs=[ckpt_input, track_input, frame_input],
+                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                )
+
+                next_button.click(
+                    fn=lambda frame_id, frame_ids: _step_frame(frame_id, frame_ids, 1),
+                    inputs=[frame_input, frame_ids_state],
+                    outputs=[frame_input],
+                ).then(
+                    fn=_predict,
+                    inputs=[ckpt_input, track_input, frame_input],
+                    outputs=[output_image, experiment_text, aggregate_metrics_text, per_class_metrics_text],
+                )
+
+                cache_track_button.click(
+                    fn=_warmup_track_cache,
+                    inputs=[ckpt_input, track_input, frame_ids_state],
+                    outputs=[playback_status],
                 )
 
             with gr.Tab("Leaderboard Report"):
@@ -628,9 +921,14 @@ def build_gradio_app() -> gr.Blocks:
                     row_count=20,
                     column_count=9,
                     wrap=True,
+                    interactive=False,
                     label="Leaderboard",
                 )
                 report_summary = gr.Markdown(label="Report Summary")
+                report_status = gr.Markdown(
+                    value="Click any leaderboard row to load its checkpoint in the Inference tab.",
+                    label="Selection Status",
+                )
 
                 refresh_report_button.click(
                     fn=_refresh_leaderboards,
@@ -642,6 +940,23 @@ def build_gradio_app() -> gr.Blocks:
                     inputs=[report_input, topk_input],
                     outputs=[report_table, report_summary],
                 )
+
+                report_table.select(
+                    fn=_select_model_from_report,
+                    inputs=[report_table],
+                    outputs=[ckpt_input, report_status],
+                )
+
+            with gr.Tab("TensorBoard"):
+                gr.Markdown(
+                    "View TensorBoard directly inside the app. "
+                    "Start TensorBoard first with `make tensorboard`, then load the URL below."
+                )
+                with gr.Row():
+                    tb_url = gr.Textbox(value="http://localhost:6006", label="TensorBoard URL")
+                    tb_load = gr.Button("Load TensorBoard", variant="primary")
+                tb_frame = gr.HTML(value=_tensorboard_iframe("http://localhost:6006"), label="TensorBoard Viewer")
+                tb_load.click(fn=_tensorboard_iframe, inputs=[tb_url], outputs=[tb_frame])
 
     return app
 
