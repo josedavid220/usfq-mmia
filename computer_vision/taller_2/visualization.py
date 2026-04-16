@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 import csv
+import base64
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -367,6 +369,49 @@ def render_comparison(
     output = output.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
     plt.close(fig)
     return output
+
+
+def render_video_frame(
+    image: torch.Tensor,
+    ground_truth: np.ndarray,
+    prediction: np.ndarray,
+) -> np.ndarray:
+    """Render compact side-by-side frame for exported track playback.
+
+    Args:
+        image: Normalized CHW image tensor.
+        ground_truth: HxW class-index mask.
+        prediction: HxW class-index mask.
+
+    Returns:
+        HxWx3 uint8 frame ready for video writing.
+    """
+
+    image_rgb = (denormalize_image(image) * 255.0).astype(np.uint8)
+    gt_color = colorize_mask(ground_truth)
+    pred_color = colorize_mask(prediction)
+    overlay = np.clip(0.65 * image_rgb + 0.35 * pred_color, 0.0, 255.0).astype(np.uint8)
+    return np.concatenate([image_rgb, gt_color, pred_color, overlay], axis=1)
+
+
+def gif_preview_html(gif_path: Path) -> str:
+    """Build inline animated preview HTML for a generated GIF.
+
+    Args:
+        gif_path: Path to GIF file.
+
+    Returns:
+        HTML snippet containing an embedded GIF preview.
+    """
+
+    encoded = base64.b64encode(gif_path.read_bytes()).decode("ascii")
+    return (
+        "<div style='padding:8px;border:1px solid #ddd;border-radius:8px;'>"
+        "<div style='font-weight:600;margin-bottom:8px;'>Generated GIF Preview</div>"
+        f"<img src='data:image/gif;base64,{encoded}' style='max-width:100%;height:auto;border-radius:6px;'/>"
+        f"<div style='margin-top:8px;font-size:0.9rem;color:#444;'>Saved at: {gif_path}</div>"
+        "</div>"
+    )
 
 
 def list_checkpoints(log_root: Path) -> list[str]:
@@ -787,6 +832,97 @@ def build_gradio_app() -> gr.Blocks:
             f"total_frames={len(frame_ids)}"
         )
 
+    def _generate_track_video(
+        ckpt_path: str,
+        track: str,
+        frame_ids: list[int],
+        fps: int,
+        stride: int,
+        max_frames: int,
+        progress: gr.Progress = gr.Progress(track_tqdm=False),
+    ) -> tuple[Any, str, str]:
+        """Generate a GIF playback file from a full track.
+
+        Args:
+            ckpt_path: Selected checkpoint path.
+            track: Selected track name.
+            frame_ids: Available frame ids for this track.
+            fps: Output frame rate.
+            stride: Keep one every N frames.
+            max_frames: Optional max number of frames (0 means all).
+
+        Returns:
+            GIF file update, animated preview HTML, and status message.
+        """
+
+        if not ckpt_path:
+            return (
+                gr.update(value=None, visible=False),
+                "",
+                "Select a checkpoint before generating playback.",
+            )
+        if not frame_ids:
+            return (
+                gr.update(value=None, visible=False),
+                "",
+                "No valid frames available for this track.",
+            )
+
+        effective_stride = max(1, int(stride))
+        selected_ids = frame_ids[::effective_stride]
+        if max_frames > 0:
+            selected_ids = selected_ids[: int(max_frames)]
+        if not selected_ids:
+            return (
+                gr.update(value=None, visible=False),
+                "",
+                "No frames selected with current stride/max settings.",
+            )
+
+        progress(0.0, desc="Preparing frames for GIF export...")
+        frames: list[np.ndarray] = []
+        total = len(selected_ids)
+        for idx, frame_id in enumerate(selected_ids, start=1):
+            image, mask = load_sample(track=track, frame_id=int(frame_id))
+            pred = engine.predict_with_cache(
+                checkpoint_path=ckpt_path,
+                track=track,
+                frame_id=int(frame_id),
+                image=image,
+            )
+            frames.append(render_video_frame(image=image, ground_truth=mask, prediction=pred))
+            progress(idx / total, desc=f"Rendering GIF frames... ({idx}/{total})")
+
+        output_dir = LOGS_DIR / "visualizer_videos"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        base_name = f"{Path(ckpt_path).stem}-{track}-{timestamp}"
+        fps_value = max(1, int(fps))
+
+        gif_path = output_dir / f"{base_name}.gif"
+        pil_frames = [Image.fromarray(frame) for frame in frames]
+        pil_frames[0].save(
+            gif_path,
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=max(20, int(1000 / fps_value)),
+            loop=0,
+        )
+        return (
+            gr.update(value=str(gif_path), visible=True),
+            gif_preview_html(gif_path),
+            f"Track GIF generated: {gif_path} ({len(frames)} frames at {fps_value} FPS).",
+        )
+
+    def _prepare_gif_export() -> tuple[Any, str, str]:
+        """Show immediate loading feedback before GIF generation starts.
+
+        Returns:
+            Cleared GIF file/preview and loading message.
+        """
+
+        return gr.update(value=None, visible=False), "", "Generating GIF, please wait..."
+
     app_css = """
     .big-frame-btn button {
         min-height: 56px !important;
@@ -828,10 +964,31 @@ def build_gradio_app() -> gr.Blocks:
                     prev_button = gr.Button("◀ Prev Frame", variant="secondary", elem_classes=["big-frame-btn"])
                     next_button = gr.Button("Next Frame ▶", variant="secondary", elem_classes=["big-frame-btn"])
                     cache_track_button = gr.Button("Cache Track Predictions")
+                    export_video_button = gr.Button("Generate Track GIF", variant="primary")
+
+                with gr.Row():
+                    export_fps_input = gr.Slider(minimum=2, maximum=30, value=8, step=1, label="GIF FPS")
+                    export_stride_input = gr.Slider(
+                        minimum=1,
+                        maximum=10,
+                        value=1,
+                        step=1,
+                        label="Frame Stride (1 = all frames)",
+                    )
+                    export_max_frames_input = gr.Slider(
+                        minimum=0,
+                        maximum=250,
+                        value=0,
+                        step=1,
+                        label="Max Frames (0 = all)",
+                    )
 
                 playback_status = gr.Markdown(value="Manual mode. Use Prev/Next and slider for navigation.")
+                export_status = gr.Markdown(value="Generate a track GIF for smooth qualitative review.")
 
                 output_image = gr.Image(label="Visualization", type="numpy")
+                output_gif = gr.Image(label="Generated Track GIF", type="filepath", visible=False)
+                output_gif_preview = gr.HTML(label="GIF Playback")
 
                 with gr.Row():
                     experiment_text = gr.Markdown(label="Experiment")
@@ -889,6 +1046,23 @@ def build_gradio_app() -> gr.Blocks:
                     fn=_warmup_track_cache,
                     inputs=[ckpt_input, track_input, frame_ids_state],
                     outputs=[playback_status],
+                )
+
+                export_video_button.click(
+                    fn=_prepare_gif_export,
+                    outputs=[output_gif, output_gif_preview, export_status],
+                ).then(
+                    fn=_generate_track_video,
+                    inputs=[
+                        ckpt_input,
+                        track_input,
+                        frame_ids_state,
+                        export_fps_input,
+                        export_stride_input,
+                        export_max_frames_input,
+                    ],
+                    outputs=[output_gif, output_gif_preview, export_status],
+                    show_progress="full",
                 )
 
             with gr.Tab("Leaderboard Report"):

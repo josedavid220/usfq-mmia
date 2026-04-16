@@ -121,7 +121,7 @@ make gradio
 
 Gradio includes:
 
-- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + split aggregate/per-class validation metrics
+- **Inference tab**: frame/GT/prediction/overlay + compact experiment summary + split aggregate/per-class validation metrics, auto inference on frame change, larger prev/next frame buttons, and one-click track GIF generation with visible loading/progress plus inline GIF playback preview
 - **Leaderboard Report tab**: ranked model report from grid runs, where clicking a row loads that checkpoint into Inference
 - **TensorBoard tab**: embedded TensorBoard viewer (run `make tensorboard` first)
 
