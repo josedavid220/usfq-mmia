@@ -4,17 +4,17 @@ PROJECT_ROOT ?= $(CURDIR)
 
 # Default high-end experiment settings.
 EXPERIMENT_PREFIX ?= t2
-ARCHITECTURES ?= Unet,UnetPlusPlus
-ENCODERS ?= resnet34,timm-efficientnet-b2
+ARCHITECTURES ?= UnetPlusPlus,FPN,PSPNet,DeepLabV3Plus
+ENCODERS ?= resnet101,timm-efficientnet-b5
 LOSSES ?= ce_dice,cross_entropy,focal,dice
-LEARNING_RATES ?= 0.001,0.0003
-BATCH_SIZES ?= 8,12
+LEARNING_RATES ?= 0.001, 0.003
+BATCH_SIZES ?= 32
 CROP_SIZES ?= 256
 SEEDS ?= 42
-MAX_EPOCHS ?= 35
-PATIENCE ?= 8
-GPU_IDS ?= 0,1,2,3
-PARALLEL_WORKERS ?= 4
+MAX_EPOCHS ?= 100
+PATIENCE ?= 10
+GPU_IDS ?= 0,1,2,3,4,5,6
+PARALLEL_WORKERS ?= 7
 PRECISION ?= 16-mixed
 STRATEGY ?= auto
 
