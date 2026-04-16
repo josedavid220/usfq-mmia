@@ -15,6 +15,7 @@ import lightning as L
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import yaml
 
@@ -263,9 +264,28 @@ class InferenceEngine:
         self.model.to(self.device)
         self.model.eval()
 
+        # SMP backbones typically require H and W divisible by the encoder output stride.
+        # Pad to the next multiple of 32, then crop prediction back to original size.
+        def _pad_to_multiple_of_32(chw: torch.Tensor) -> tuple[torch.Tensor, int, int]:
+            _, height, width = chw.shape
+            target_height = ((height + 31) // 32) * 32
+            target_width = ((width + 31) // 32) * 32
+            pad_bottom = target_height - height
+            pad_right = target_width - width
+            if pad_bottom == 0 and pad_right == 0:
+                return chw, 0, 0
+            padded = F.pad(chw, (0, pad_right, 0, pad_bottom), mode="constant", value=0.0)
+            return padded, pad_bottom, pad_right
+
         with torch.no_grad():
-            logits = self.model(image.unsqueeze(0).to(self.device))
-            pred = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
+            padded_image, pad_bottom, pad_right = _pad_to_multiple_of_32(image)
+            logits = self.model(padded_image.unsqueeze(0).to(self.device))
+            pred_tensor = torch.argmax(logits, dim=1).squeeze(0)
+            if pad_bottom > 0:
+                pred_tensor = pred_tensor[:-pad_bottom, :]
+            if pad_right > 0:
+                pred_tensor = pred_tensor[:, :-pad_right]
+            pred = pred_tensor.cpu().numpy()
         return pred
 
     def predict_with_cache(
@@ -747,9 +767,9 @@ def build_gradio_app() -> gr.Blocks:
         return load_leaderboard(path=path, top_k=int(top_k))
 
     def _select_model_from_report(
-        report_rows: list[list[Any]],
+        report_rows: Any,
         evt: gr.SelectData,
-    ) -> tuple[gr.Dropdown, str]:
+    ) -> tuple[gr.Dropdown, str, gr.Tabs]:
         """Use selected leaderboard row to populate inference checkpoint.
 
         Args:
@@ -757,30 +777,61 @@ def build_gradio_app() -> gr.Blocks:
             evt: Selection event payload from dataframe.
 
         Returns:
-            Updated checkpoint dropdown and status markdown.
+            Updated checkpoint dropdown, status markdown, and selected tab.
         """
 
-        if not report_rows:
-            return gr.Dropdown(), "No report rows loaded yet."
+        normalized_rows: list[list[Any]]
+        if report_rows is None:
+            normalized_rows = []
+        elif hasattr(report_rows, "empty") and hasattr(report_rows, "values"):
+            if bool(report_rows.empty):
+                normalized_rows = []
+            else:
+                normalized_rows = report_rows.values.tolist()
+        elif isinstance(report_rows, list):
+            normalized_rows = report_rows
+        else:
+            try:
+                normalized_rows = list(report_rows)
+            except TypeError:
+                normalized_rows = []
 
-        row_index = evt.index[0] if isinstance(evt.index, tuple) else int(evt.index)
-        if row_index < 0 or row_index >= len(report_rows):
-            return gr.Dropdown(), "Selected row is out of bounds."
+        if len(normalized_rows) == 0:
+            return gr.Dropdown(), "No report rows loaded yet.", gr.Tabs()
 
-        selected_row = report_rows[row_index]
+        row_index_raw = evt.index
+        if isinstance(row_index_raw, tuple):
+            row_index = int(row_index_raw[0])
+        elif isinstance(row_index_raw, list):
+            row_index = int(row_index_raw[0])
+        else:
+            row_index = int(row_index_raw)
+        if row_index < 0 or row_index >= len(normalized_rows):
+            return gr.Dropdown(), "Selected row is out of bounds.", gr.Tabs()
+
+        selected_row = normalized_rows[row_index]
         if len(selected_row) < 9:
-            return gr.Dropdown(), "Selected row is missing checkpoint information."
+            return (
+                gr.Dropdown(),
+                "Selected row is missing checkpoint information.",
+                gr.Tabs(),
+            )
 
         checkpoint_path = str(selected_row[8])
         if not checkpoint_path:
-            return gr.Dropdown(), "Selected row has an empty checkpoint path."
+            return gr.Dropdown(), "Selected row has an empty checkpoint path.", gr.Tabs()
 
         if not Path(checkpoint_path).exists():
-            return gr.Dropdown(), f"Checkpoint not found on disk: {checkpoint_path}"
+            return (
+                gr.Dropdown(),
+                f"Checkpoint not found on disk: {checkpoint_path}",
+                gr.Tabs(),
+            )
 
         return (
             gr.Dropdown(value=checkpoint_path),
             f"Selected model loaded in Inference tab: {selected_row[1]}",
+            gr.Tabs(selected="inference_tab"),
         )
 
     def _tensorboard_iframe(url: str) -> str:
@@ -990,8 +1041,8 @@ def build_gradio_app() -> gr.Blocks:
             "Use the tabs to switch between sample inference and leaderboard analysis."
         )
 
-        with gr.Tabs():
-            with gr.Tab("Inference"):
+        with gr.Tabs(selected="inference_tab") as main_tabs:
+            with gr.Tab("Inference", id="inference_tab"):
                 gr.HTML(value=legend_html(), label="Class Legend")
                 initial_frames = list_available_frames(tracks[0]) if tracks else []
                 initial_frame = initial_frames[0] if initial_frames else 0
@@ -1170,7 +1221,7 @@ def build_gradio_app() -> gr.Blocks:
                     show_progress="full",
                 )
 
-            with gr.Tab("Leaderboard Report"):
+            with gr.Tab("Leaderboard Report", id="leaderboard_tab"):
                 gr.Markdown("Browse ranked results generated by the grid runner.")
                 with gr.Row():
                     report_input = gr.Dropdown(
@@ -1235,7 +1286,7 @@ def build_gradio_app() -> gr.Blocks:
                 report_table.select(
                     fn=_select_model_from_report,
                     inputs=[report_table],
-                    outputs=[ckpt_input, report_status],
+                    outputs=[ckpt_input, report_status, main_tabs],
                 )
 
             with gr.Tab("TensorBoard"):
