@@ -223,3 +223,6 @@ logs/*
 
 # Pdfs
 *.pdf
+
+# Txt files
+*.txt
